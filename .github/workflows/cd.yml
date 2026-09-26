@@ -29,6 +29,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set lowercase image name
+        run: |
+          echo "IMAGE_NAME=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -43,7 +47,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=sha,format=long,prefix=
             type=ref,event=branch
@@ -59,8 +63,11 @@ jobs:
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.35.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
           format: 'sarif'
@@ -91,6 +98,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set lowercase image name
+        run: |
+          echo "IMAGE_NAME=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -103,7 +114,7 @@ jobs:
       - name: Deploy to Kubernetes
         run: |
           kubectl set image deployment/task-api \
-            task-api=ghcr.io/${{ github.repository }}:${{ github.sha }}
+            task-api=${{ env.IMAGE_NAME }}:${{ github.sha }}
           kubectl rollout status deployment/task-api --timeout=120s
 
       - name: Verify deployment
