@@ -15,8 +15,8 @@ runs:
         cache: npm
     - name: Install dependencies
       run: |
-        if [ -f package-lock.json ]; then
-          npm ci
+        if [ -f package-lock.json ] && grep -q '"lockfileVersion"' package-lock.json; then
+          npm ci || npm install
         else
           npm install
         fi
