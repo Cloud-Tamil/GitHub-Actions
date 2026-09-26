@@ -1,0 +1,103 @@
+name: CD Pipeline
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+
+# Required permissions
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # Required for OIDC
+
+# Prevent multiple production deployments from running at the same time
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # Never cancel a deploy mid-flight
+
+jobs:
+  # ========== JOB 1: Build & Scan Docker Image ==========
+  build:
+    name: Build & Scan Image
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+
+      - name: Upload image scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-image.sarif'
+
+  # ========== JOB 2: Deploy to Kubernetes ==========
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: production
+      url: https://tasks.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name task-manager-cluster --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl set image deployment/task-api \
+            task-api=ghcr.io/${{ github.repository }}:${{ github.sha }}
+          kubectl rollout status deployment/task-api --timeout=120s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -l app=task-api
+          kubectl get svc task-api
